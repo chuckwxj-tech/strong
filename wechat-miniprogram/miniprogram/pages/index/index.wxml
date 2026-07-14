@@ -1,0 +1,383 @@
+<scroll-view class="page" scroll-y enhanced show-scrollbar="{{false}}">
+  <view class="topbar">
+    <view class="mini-brand"><text class="mini-brand-x">X</text><text>X健身计数</text></view>
+    <view class="date-copy">{{dateLabel}}</view>
+  </view>
+
+  <view class="mode-rail">
+    <view class="mode-item {{mode === 'training' ? 'mode-item--active' : ''}}">
+      <text class="mode-number">1</text><text>训练</text>
+    </view>
+    <view class="mode-line {{mode === 'rest' ? 'mode-line--active' : ''}}"></view>
+    <view class="mode-item {{mode === 'rest' ? 'mode-item--active' : ''}}">
+      <text class="mode-number">2</text><text>休息</text>
+    </view>
+  </view>
+
+  <view wx:if="{{mode === 'training'}}" class="training-screen">
+    <view class="screen-heading">
+      <view>
+        <view class="eyebrow">正在训练</view>
+        <view class="screen-title">第 {{sets.length + 1}} 组</view>
+      </view>
+      <button class="live-heart {{connectedDeviceId ? 'live-heart--active' : ''}}" bindtap="scanHeartRate">
+        <text class="live-heart-icon">♥</text>
+        <view class="live-heart-copy">
+          <view class="live-heart-value">{{heartRate}} <text>BPM</text></view>
+          <view class="live-heart-label">{{heartStatus}}</view>
+        </view>
+      </button>
+    </view>
+
+    <view class="workout-card">
+      <view class="exercise-field-heading">
+        <view class="field-label">当前动作</view>
+        <view class="exercise-tools">
+          <view class="manage-exercises" bindtap="openExerciseManager">动作库</view>
+          <view class="manage-exercises" bindtap="openTemplateManager">训练模板</view>
+        </view>
+      </view>
+      <input class="exercise-input" value="{{exerciseName}}" data-key="exerciseName" bindinput="onFieldInput" bindblur="onFieldBlur" disabled="{{farmerActiveSide || farmerLeftDurationMs || farmerRightDurationMs}}" placeholder="输入动作名称" />
+      <view class="recent-exercises">
+        <view wx:for="{{quickExercises}}" wx:key="id" class="exercise-chip {{exerciseId === item.id ? 'exercise-chip--active' : ''}}" data-id="{{item.id}}" bindtap="selectExercise">{{item.name}}</view>
+      </view>
+
+      <view wx:if="{{activeTemplateId}}" class="active-template">
+        <view class="active-template-heading">
+          <view><text>正在使用模板</text><view>{{activeTemplateName}}</view></view>
+          <view class="active-template-close" bindtap="clearActiveTemplate">结束</view>
+        </view>
+        <scroll-view class="active-template-list" scroll-x enhanced show-scrollbar="{{false}}">
+          <view class="active-template-track">
+            <view wx:for="{{activeTemplateExercises}}" wx:key="exerciseId" class="template-exercise-chip {{activeTemplateIndex === index ? 'template-exercise-chip--active' : ''}}" data-index="{{index}}" bindtap="selectTemplateExercise">
+              <text>{{index + 1}}</text>{{item.exerciseName}}
+            </view>
+          </view>
+        </scroll-view>
+      </view>
+
+      <view wx:if="{{lastPerformance}}" class="last-performance">
+        <view class="last-performance-icon">↺</view>
+        <view class="last-performance-copy">
+          <view>上次训练 · {{lastPerformance.dateKey}}</view>
+          <text wx:if="{{lastPerformance.trackingMode === 'farmer_sides'}}">{{lastPerformance.weight > 0 ? lastPerformance.weight + ' kg/手 · ' : ''}}左 {{lastPerformance.leftDurationSeconds}} 秒 · 右 {{lastPerformance.rightDurationSeconds}} 秒 · {{lastPerformance.setsCount}} 组</text>
+          <text wx:else>{{lastPerformance.weight > 0 ? lastPerformance.weight + ' kg × ' : ''}}{{lastPerformance.reps}} {{lastPerformance.measureType === 'duration' ? '秒' : '次'}} · {{lastPerformance.setsCount}} 组</text>
+        </view>
+        <view class="last-performance-badge">切换时带入</view>
+      </view>
+
+      <view class="metric-grid">
+        <view class="metric-box">
+          <view class="metric-label">{{exerciseId === 'farmer_walk' ? '重量 / 手' : '重量'}}</view>
+          <view class="metric-stepper">
+            <view class="stepper-action {{exerciseId === 'farmer_walk' && (farmerActiveSide || farmerLeftDurationMs || farmerRightDurationMs) ? 'stepper-action--disabled' : ''}}" data-key="weight" data-step="-2.5" bindtap="stepMetric" bindlongpress="startStepper" bindtouchend="stopStepper" bindtouchcancel="stopStepper">−</view>
+            <view class="metric-input-row">
+              <input class="metric-input" type="digit" value="{{weight}}" data-key="weight" bindinput="onFieldInput" bindblur="onFieldBlur" disabled="{{exerciseId === 'farmer_walk' && (farmerActiveSide || farmerLeftDurationMs || farmerRightDurationMs)}}" />
+              <text class="metric-unit">kg</text>
+            </view>
+            <view class="stepper-action {{exerciseId === 'farmer_walk' && (farmerActiveSide || farmerLeftDurationMs || farmerRightDurationMs) ? 'stepper-action--disabled' : ''}}" data-key="weight" data-step="2.5" bindtap="stepMetric" bindlongpress="startStepper" bindtouchend="stopStepper" bindtouchcancel="stopStepper">＋</view>
+          </view>
+        </view>
+        <view wx:if="{{exerciseId !== 'farmer_walk'}}" class="metric-box">
+          <view class="metric-label">{{measureType === 'duration' ? '时长' : '次数'}}</view>
+          <view class="metric-stepper">
+            <view class="stepper-action" data-key="reps" data-step="{{measureType === 'duration' ? -5 : -1}}" bindtap="stepMetric" bindlongpress="startStepper" bindtouchend="stopStepper" bindtouchcancel="stopStepper">−</view>
+            <view class="metric-input-row">
+              <input class="metric-input" type="number" value="{{reps}}" data-key="reps" bindinput="onFieldInput" bindblur="onFieldBlur" />
+              <text class="metric-unit">{{measureType === 'duration' ? '秒' : '次'}}</text>
+            </view>
+            <view class="stepper-action" data-key="reps" data-step="{{measureType === 'duration' ? 5 : 1}}" bindtap="stepMetric" bindlongpress="startStepper" bindtouchend="stopStepper" bindtouchcancel="stopStepper">＋</view>
+          </view>
+        </view>
+        <view class="metric-box">
+          <view class="metric-label">休息</view>
+          <view class="metric-stepper metric-stepper--static">
+            <view class="stepper-spacer"></view>
+            <view class="metric-input-row">
+              <input class="metric-input" type="number" value="{{restSeconds}}" data-key="restSeconds" bindinput="onFieldInput" bindblur="onFieldBlur" />
+              <text class="metric-unit">秒</text>
+            </view>
+            <view class="stepper-spacer"></view>
+          </view>
+        </view>
+      </view>
+
+      <view wx:if="{{exerciseId === 'farmer_walk'}}" class="farmer-stopwatch">
+        <view class="farmer-stopwatch-heading">
+          <view>
+            <view class="farmer-stopwatch-title">左右手实时时长</view>
+            <view class="farmer-stopwatch-copy">先练哪侧都可以，每侧独立开始与结束</view>
+          </view>
+          <view wx:if="{{farmerActiveSide || farmerLeftDurationMs || farmerRightDurationMs}}" class="farmer-reset" bindtap="resetFarmerTimingFromUI">清空本组</view>
+        </view>
+        <view class="farmer-side-grid">
+          <view class="farmer-side-card {{farmerActiveSide === 'left' ? 'farmer-side-card--active' : ''}} {{farmerLeftDurationMs ? 'farmer-side-card--done' : ''}}">
+            <view class="farmer-side-label">左手</view>
+            <view class="farmer-side-time">{{farmerLeftText}}</view>
+            <button class="farmer-side-action {{farmerActiveSide === 'left' ? 'farmer-side-action--stop' : ''}} {{farmerActiveSide && farmerActiveSide !== 'left' ? 'farmer-side-action--disabled' : ''}}" data-side="left" bindtap="toggleFarmerSide">{{farmerActiveSide === 'left' ? '结束左手' : (farmerLeftDurationMs ? '重测左手' : '开始左手')}}</button>
+          </view>
+          <view class="farmer-side-card {{farmerActiveSide === 'right' ? 'farmer-side-card--active' : ''}} {{farmerRightDurationMs ? 'farmer-side-card--done' : ''}}">
+            <view class="farmer-side-label">右手</view>
+            <view class="farmer-side-time">{{farmerRightText}}</view>
+            <button class="farmer-side-action {{farmerActiveSide === 'right' ? 'farmer-side-action--stop' : ''}} {{farmerActiveSide && farmerActiveSide !== 'right' ? 'farmer-side-action--disabled' : ''}}" data-side="right" bindtap="toggleFarmerSide">{{farmerActiveSide === 'right' ? '结束右手' : (farmerRightDurationMs ? '重测右手' : '开始右手')}}</button>
+          </view>
+        </view>
+        <view wx:if="{{farmerActiveSide}}" class="farmer-stopwatch-status farmer-stopwatch-status--active">{{farmerActiveSide === 'left' ? '左手' : '右手'}}计时中，完成后点击结束</view>
+        <view wx:elif="{{farmerLeftDurationMs && farmerRightDurationMs}}" class="farmer-stopwatch-status farmer-stopwatch-status--ready">左右手均已记录，可以保存本组</view>
+        <view wx:elif="{{farmerLeftDurationMs || farmerRightDurationMs}}" class="farmer-stopwatch-status">一侧已完成，继续记录另一侧</view>
+        <view wx:else class="farmer-stopwatch-status">开始后按真实经过时间统计，不使用预设倒计时</view>
+      </view>
+
+      <button class="primary-action {{exerciseId === 'farmer_walk' && (farmerActiveSide || !farmerLeftDurationMs || !farmerRightDurationMs) ? 'primary-action--disabled' : ''}}" bindtap="completeSet">
+        <text class="action-check">✓</text>
+        <view>
+          <view class="action-title">{{exerciseId === 'farmer_walk' ? '保存本组' : '完成本组'}}</view>
+          <view class="action-subtitle">{{exerciseId === 'farmer_walk' ? (farmerLeftDurationMs && farmerRightDurationMs ? '保存左右手时长并进入休息' : '先完成左右手计时') : '保存记录并进入休息'}}</view>
+        </view>
+      </button>
+      <view wx:if="{{exerciseId === 'farmer_walk'}}" class="action-note">左右手均结束后保存，随后启动 {{restSeconds}} 秒休息</view>
+      <view wx:else class="action-note">点击后自动启动 {{restSeconds}} 秒倒计时</view>
+    </view>
+
+    <view class="today-strip">
+      <view class="today-item">
+        <view class="today-value">{{sets.length}}</view>
+        <view class="today-label">今日组数</view>
+      </view>
+      <view class="today-divider"></view>
+      <view class="today-item">
+        <view class="today-value">{{totalVolume}}</view>
+        <view class="today-label">训练容量 kg</view>
+      </view>
+      <view class="today-divider"></view>
+      <view class="today-item">
+        <view class="today-value">{{heartSampleCount}}</view>
+        <view class="today-label">心率采样</view>
+      </view>
+    </view>
+
+    <view wx:if="{{heartSampleCount}}" class="heart-overview">
+      <view class="overview-heading">
+        <view>
+          <view class="eyebrow">全程心率</view>
+          <view class="overview-title">原始数据逐条保存中</view>
+        </view>
+        <view class="recording-dot"><text></text>记录中</view>
+      </view>
+      <view class="overview-grid">
+        <view class="overview-stat"><text>{{heartAverage}}</text><view>平均 BPM</view></view>
+        <view class="overview-stat"><text>{{heartMaximum}}</text><view>最高 BPM</view></view>
+        <view class="overview-stat"><text>{{heartMinimum}}</text><view>最低 BPM</view></view>
+      </view>
+    </view>
+
+    <view class="history-card">
+      <view class="overview-heading">
+        <view>
+          <view class="eyebrow">今日记录</view>
+          <view class="overview-title">已完成的组</view>
+        </view>
+        <view class="saved-badge">已保存</view>
+      </view>
+      <view wx:if="{{!sets.length}}" class="empty-record">
+        <view class="empty-plus">＋</view>
+        <view>完成第一组后，记录会出现在这里</view>
+      </view>
+      <view wx:for="{{sets}}" wx:key="id" class="set-row">
+        <view class="set-number">{{sets.length - index}}</view>
+        <view class="set-copy">
+          <view class="set-name">{{item.exerciseName}}</view>
+          <view class="set-time">{{item.time}}</view>
+        </view>
+        <view wx:if="{{item.trackingMode === 'farmer_sides'}}" class="set-result set-result--farmer">
+          <view class="set-result-farmer-weight">{{item.weight}} kg/手</view>
+          <text class="set-result-farmer-sides">左 {{item.leftDurationSeconds}} 秒 · 右 {{item.rightDurationSeconds}} 秒</text>
+        </view>
+        <view wx:else class="set-result">{{item.weight > 0 ? item.weight + ' kg × ' : ''}}{{item.measureType === 'duration' ? item.durationSeconds : item.reps}} {{item.measureType === 'duration' ? '秒' : '次'}}</view>
+        <button class="delete-action" data-id="{{item.id}}" bindtap="removeSet">×</button>
+      </view>
+    </view>
+  </view>
+
+  <view wx:else class="rest-screen">
+    <view class="rest-complete">
+      <view class="complete-mark">✓</view>
+      <view class="eyebrow">第 {{sets.length}} 组已保存</view>
+      <view class="rest-title">专心恢复</view>
+    </view>
+
+    <view class="countdown-card">
+      <view class="timer-ring" style="background: conic-gradient(#c8ff18 {{timerProgress}}%, #26344b 0);">
+        <view class="timer-ring-inner">
+          <view class="countdown-label">组间休息</view>
+          <view class="countdown-value">{{timerText}}</view>
+          <view class="countdown-status">{{timerRunning ? '倒计时进行中' : (timerRemaining === 0 ? '休息时间已到' : '倒计时已暂停')}}</view>
+        </view>
+      </view>
+      <view class="countdown-controls">
+        <button class="time-adjust" data-delta="-15" bindtap="adjustTimer">−15秒</button>
+        <button class="pause-action" bindtap="toggleTimer">{{timerRunning ? '暂停' : '继续'}}</button>
+        <button class="time-adjust" data-delta="15" bindtap="adjustTimer">+15秒</button>
+      </view>
+    </view>
+
+    <view class="recovery-card">
+      <view class="recovery-heading">
+        <view>
+          <view class="eyebrow">心率恢复</view>
+          <view class="overview-title">实时跟踪</view>
+        </view>
+        <button class="connection-pill {{connectedDeviceId ? 'connection-pill--active' : ''}}" bindtap="scanHeartRate">
+          <text class="connection-dot"></text>{{connectedDeviceId ? '已连接' : '连接设备'}}
+        </button>
+      </view>
+
+      <view class="recovery-primary">
+        <view class="current-heart">
+          <view class="current-heart-value"><text class="heart-symbol">♥</text>{{heartRate}}</view>
+          <view class="current-heart-label">当前 BPM</view>
+        </view>
+        <view class="recovery-arrow">→</view>
+        <view class="recovery-drop">
+          <view class="recovery-drop-value">↓ {{heartRecovery}}</view>
+          <view class="current-heart-label">已恢复 BPM</view>
+        </view>
+      </view>
+
+      <view class="recovery-metrics">
+        <view class="recovery-metric"><view>{{restPeak}}</view><text>本组峰值</text></view>
+        <view class="recovery-metric"><view>{{heartAt60}}</view><text>60秒恢复</text></view>
+        <view class="recovery-metric"><view>{{heartSampleCount}}</view><text>今日采样</text></view>
+      </view>
+
+      <view class="sparkline-wrap">
+        <view class="sparkline-heading"><text>最近 90 秒心率</text><text>实时</text></view>
+        <canvas id="heartSparkline" canvas-id="heartSparkline" class="heart-sparkline"></canvas>
+      </view>
+
+      <view class="readiness {{heartRecovery >= recoveryReadyThreshold ? 'readiness--ready' : ''}}">
+        <view class="readiness-icon">{{heartRecovery >= recoveryReadyThreshold ? '✓' : '•••'}}</view>
+        <view>
+          <view class="readiness-title">{{recoveryStatus}}</view>
+          <view class="readiness-note">心率仅作训练参考，请结合自身感受</view>
+        </view>
+      </view>
+    </view>
+
+    <button class="next-set-action" bindtap="startNextSet">
+      <view>
+        <view class="next-title">开始下一组</view>
+        <view class="next-subtitle">返回第 {{sets.length + 1}} 组训练界面</view>
+      </view>
+      <text class="next-arrow">›</text>
+    </button>
+    <view class="rest-bottom-note">无需等待倒计时结束，可随时开始下一组</view>
+  </view>
+
+  <view class="safe-bottom"></view>
+</scroll-view>
+
+<view wx:if="{{showExerciseManager}}" class="modal-mask" catchtouchmove="true">
+  <view class="exercise-sheet">
+    <view class="sheet-handle"></view>
+    <view class="sheet-heading">
+      <view>
+        <view class="sheet-title">动作库</view>
+        <view class="sheet-tip">收藏的动作会优先显示在训练页</view>
+      </view>
+      <view class="sheet-close" bindtap="closeExerciseManager">×</view>
+    </view>
+
+    <view class="library-tabs">
+      <view class="library-tab {{libraryMode === 'favorites' ? 'library-tab--active' : ''}}" data-mode="favorites" bindtap="onLibraryMode">常用</view>
+      <view class="library-tab {{libraryMode === 'all' ? 'library-tab--active' : ''}}" data-mode="all" bindtap="onLibraryMode">全部</view>
+      <view class="library-tab {{libraryMode === 'archived' ? 'library-tab--active' : ''}}" data-mode="archived" bindtap="onLibraryMode">已归档</view>
+    </view>
+    <view class="library-groups">
+      <view class="library-group {{libraryGroup === '全部' ? 'library-group--active' : ''}}" data-group="全部" bindtap="onLibraryGroup">全部</view>
+      <view wx:for="{{muscleGroups}}" wx:key="*this" class="library-group {{libraryGroup === item ? 'library-group--active' : ''}}" data-group="{{item}}" bindtap="onLibraryGroup">{{item}}</view>
+    </view>
+
+    <scroll-view class="exercise-editor-list" scroll-y enhanced show-scrollbar="{{false}}">
+      <view wx:for="{{filteredDraftExercises}}" wx:key="id" class="exercise-editor-row">
+        <view class="exercise-favorite {{item.favorite ? 'exercise-favorite--active' : ''}}" data-id="{{item.id}}" bindtap="toggleExerciseFavorite">{{item.favorite ? '★' : '☆'}}</view>
+        <view class="exercise-editor-main">
+          <input class="exercise-editor-input" value="{{item.name}}" data-id="{{item.id}}" bindinput="onExerciseOptionInput" maxlength="20" />
+          <picker mode="selector" range="{{muscleGroups}}" value="{{item.groupIndex}}" data-id="{{item.id}}" bindchange="onExerciseGroupChange">
+            <view class="exercise-group-picker">{{item.group}}<text>⌄</text></view>
+          </picker>
+          <view wx:if="{{item.id === 'farmer_walk'}}" class="exercise-measure-picker exercise-measure-picker--locked">计时</view>
+          <picker wx:else mode="selector" range="{{measureTypes}}" range-key="label" value="{{item.measureTypeIndex}}" data-id="{{item.id}}" bindchange="onExerciseMeasureTypeChange">
+            <view class="exercise-measure-picker">{{item.measureType === 'duration' ? '计时' : '次数'}}<text>⌄</text></view>
+          </picker>
+        </view>
+        <view class="exercise-archive {{item.archived ? 'exercise-archive--restore' : ''}}" data-id="{{item.id}}" bindtap="toggleExerciseArchive">{{item.archived ? '恢复' : '归档'}}</view>
+      </view>
+      <view wx:if="{{!filteredDraftExercises.length}}" class="library-empty">这个分类还没有动作</view>
+    </scroll-view>
+
+    <view class="exercise-add-row">
+      <input class="exercise-add-input" value="{{newExerciseName}}" bindinput="onNewExerciseInput" maxlength="20" placeholder="输入新动作，例如哑铃飞鸟" />
+      <picker mode="selector" range="{{muscleGroups}}" value="{{newExerciseGroupIndex}}" bindchange="onNewExerciseGroupChange">
+        <view class="exercise-add-group">{{newExerciseGroup}}<text>⌄</text></view>
+      </picker>
+      <picker mode="selector" range="{{measureTypes}}" range-key="label" value="{{newExerciseMeasureTypeIndex}}" bindchange="onNewExerciseMeasureTypeChange">
+        <view class="exercise-add-measure">{{newExerciseMeasureType === 'duration' ? '计时' : '次数'}}<text>⌄</text></view>
+      </picker>
+      <view class="exercise-add-action" bindtap="addExerciseOption">添加</view>
+    </view>
+    <view class="exercise-save-action" bindtap="saveExerciseOptions">保存动作库</view>
+  </view>
+</view>
+
+<view wx:if="{{showTemplateManager}}" class="modal-mask" catchtouchmove="true">
+  <view class="template-sheet">
+    <view class="sheet-handle"></view>
+    <view class="sheet-heading">
+      <view>
+        <view class="sheet-title">训练模板</view>
+        <view class="sheet-tip">一次带入整套动作和上次使用的参数</view>
+      </view>
+      <view class="sheet-close" bindtap="closeTemplateManager">×</view>
+    </view>
+    <scroll-view class="template-list" scroll-y enhanced show-scrollbar="{{false}}">
+      <view wx:for="{{templates}}" wx:key="id" class="template-row">
+        <view class="template-copy">
+          <view>{{item.name}}</view>
+          <text>{{item.exercises.length}} 个动作</text>
+        </view>
+        <view class="template-row-actions">
+          <view class="template-start" data-id="{{item.id}}" bindtap="startTemplate">开始</view>
+          <view class="template-delete" data-id="{{item.id}}" bindtap="deleteTemplate">删除</view>
+        </view>
+      </view>
+      <view wx:if="{{!templates.length}}" class="template-empty">
+        <view>还没有训练模板</view>
+        <text>完成今天的训练组后，就能保存为模板</text>
+      </view>
+    </scroll-view>
+    <view class="template-save-action" bindtap="saveTodayAsTemplate">＋ 将今日动作保存为模板</view>
+  </view>
+</view>
+
+<view wx:if="{{showDevices}}" class="modal-mask" catchtouchmove="true">
+  <view class="device-sheet">
+    <view class="sheet-handle"></view>
+    <view class="sheet-heading">
+      <view>
+        <view class="sheet-title">选择心率设备</view>
+        <view class="sheet-tip">请先佩戴并唤醒心率带</view>
+      </view>
+      <view class="sheet-close" bindtap="closeDeviceList">×</view>
+    </view>
+    <view wx:if="{{scanning}}" class="scanning"><text></text>正在搜索附近设备</view>
+    <scroll-view class="device-list" scroll-y>
+      <button wx:for="{{bluetoothDevices}}" wx:key="deviceId" class="device-row" data-id="{{item.deviceId}}" data-name="{{item.displayName}}" bindtap="connectDevice">
+        <view class="device-heart">♥</view>
+        <view class="device-copy"><view>{{item.displayName}}</view><text>点击连接</text></view>
+        <view class="device-arrow">›</view>
+      </button>
+      <view wx:if="{{!bluetoothDevices.length}}" class="device-empty">暂未发现设备，请保持心率带处于唤醒状态</view>
+    </scroll-view>
+  </view>
+</view>
