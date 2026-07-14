@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { access, readFile, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
+import { register } from "node:module";
 import test from "node:test";
 
-const developmentPreviewMeta =
-  /<meta(?=[^>]*\bname=["']codex-preview["'])(?=[^>]*\bcontent=["']development["'])[^>]*>/i;
-const templateRoot = new URL("../", import.meta.url);
-const previewRoot = new URL("../app/_sites-preview/", import.meta.url);
+register("./cloudflare-workers-loader.mjs", import.meta.url);
+
+const routeUrl = new URL("../app/api/workouts/route.ts", import.meta.url);
+const pageUrl = new URL("../app/page.tsx", import.meta.url);
 
 async function render() {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
@@ -28,60 +29,59 @@ async function render() {
   );
 }
 
-test("server-renders the starter loading skeleton", async () => {
+test("server-renders the REST / SET workout timer", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, developmentPreviewMeta);
-  assert.match(html, /<title>Your site is taking shape<\/title>/i);
-  assert.match(html, /Codex is working/);
-  assert.match(html, /Your site is taking shape/);
-  assert.match(html, /Codex is building the first version/);
-  assert.match(html, /react-loading-skeleton/);
-  assert.match(html, /role="status"/);
+  assert.match(html, /<title>REST \/ SET · 组间计时与训练记录<\/title>/i);
+  assert.match(html, /REST/);
+  assert.match(html, /SET/);
+  assert.match(html, /力量训练组间控制/);
+  assert.match(html, /记录动作数据/);
+  assert.match(html, /完成本组 · 开始休息/);
+  assert.match(html, /训练记录/);
 });
 
-test("keeps the loading skeleton scoped and disposable", async () => {
-  const [preview, css, page, layout, packageJson, files] = await Promise.all([
-    readFile(new URL("SkeletonPreview.tsx", previewRoot), "utf8"),
-    readFile(new URL("preview.css", previewRoot), "utf8"),
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../package.json", import.meta.url), "utf8"),
-    readdir(previewRoot),
-  ]);
+test("workout API validates runtime input and uses the Drizzle schema", async () => {
+  const route = await readFile(routeUrl, "utf8");
 
-  assert.deepEqual(files.sort(), ["SkeletonPreview.tsx", "preview.css"]);
-  assert.match(preview, /from "react-loading-skeleton"/);
-  assert.match(preview, /baseColor="#eceae7"/);
-  assert.match(preview, /highlightColor="#f9f8f6"/);
-  assert.match(preview, /duration=\{2\.8\}/);
-  assert.match(preview, /sites-skeleton-search-placeholder/);
-  assert.match(packageJson, /"react-loading-skeleton": "3\.5\.0"/);
+  assert.match(route, /from "drizzle-orm"/);
+  assert.match(route, /import \{ getDb \} from "\.\.\/\.\.\/\.\.\/db"/);
+  assert.match(route, /import \{ exercisePresets, workoutSets \} from "\.\.\/\.\.\/\.\.\/db\/schema"/);
+  assert.match(route, /typeof record\?\.exercise === "string"/);
+  assert.match(route, /Number\.isSafeInteger\(record\.completedAt\)/);
+  assert.match(route, /record\.heartRateBpm === null/);
+  assert.match(route, /Number\.isInteger\(record\.heartRateBpm\)/);
+  assert.match(route, /\.from\(workoutSets\)/);
+  assert.match(route, /\.insert\(workoutSets\)/);
+  assert.match(route, /\.delete\(workoutSets\)/);
+  assert.match(route, /existingRecord\.deviceId !== deviceId/);
+  assert.match(route, /setWhere: eq\(workoutSets\.deviceId, deviceId\)/);
 
-  const shellIndex = preview.indexOf('className="sites-skeleton-shell"');
-  const statusIndex = preview.indexOf('className="sites-skeleton-status"');
-  assert.ok(shellIndex >= 0 && statusIndex > shellIndex);
-  assert.match(css, /position:\s*fixed/);
-  assert.match(css, /inset:\s*0/);
-  assert.match(css, /opacity:\s*0\.52/);
-  assert.match(css, /prefers-reduced-motion:\s*reduce/);
-  assert.doesNotMatch(css, /#020617|canvas|pets|progress/i);
-  assert.doesNotMatch(
-    preview,
-    /loading-spinner|status-mark|status-progress|canvas|cookie|random/i,
+  assert.doesNotMatch(route, /CREATE (?:TABLE|INDEX)/i);
+  assert.doesNotMatch(route, /initializeSchema|type Statement|type Database/);
+});
+
+test("finish cue releases audio and failed saves roll back", async () => {
+  const page = await readFile(pageUrl, "utf8");
+  const cue = page.slice(
+    page.indexOf("function playFinishCue"),
+    page.indexOf("export default function Home"),
   );
-
-  assert.match(page, /export const metadata:\s*Metadata/);
-  assert.match(page, /"codex-preview": "development"/);
-  assert.match(page, /<SkeletonPreview \/>/);
-  assert.match(layout, /title:\s*"Starter Project"/);
-  assert.doesNotMatch(layout, /codex-preview|_sites-preview|themeColor|\bViewport\b/);
-  assert.doesNotMatch(css, /(^|\s)(html|body)\s*\{/m);
-
-  await assert.rejects(
-    access(new URL("public/_sites-preview", templateRoot)),
+  const recordSet = page.slice(
+    page.indexOf("const recordSet"),
+    page.indexOf("const handlePrimary"),
   );
+  const failure = recordSet.slice(recordSet.indexOf("} catch {"));
+
+  assert.match(cue, /addEventListener\("ended"/);
+  assert.match(cue, /audio\.close\(\)/);
+  assert.match(cue, /window\.setTimeout\(closeAudio, 1000\)/);
+  assert.match(
+    failure,
+    /setRecords\(\(current\) => current\.filter\(\(entry\) => entry\.id !== item\.id\)\)/,
+  );
+  assert.doesNotMatch(failure, /setExercise|setWeightKg|setReps/);
 });

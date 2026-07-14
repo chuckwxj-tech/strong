@@ -1,14 +1,6 @@
-import { env } from "cloudflare:workers";
-
-type Statement = {
-  bind(...values: unknown[]): Statement;
-  all<T>(): Promise<{ results: T[] }>;
-};
-
-type Database = {
-  prepare(sql: string): Statement;
-  batch(statements: Statement[]): Promise<unknown[]>;
-};
+import { and, asc, desc, eq } from "drizzle-orm";
+import { getDb } from "../../../db";
+import { exercisePresets, workoutSets } from "../../../db/schema";
 
 type RecordInput = {
   id: string;
@@ -20,54 +12,49 @@ type RecordInput = {
   heartRateBpm: number | null;
 };
 
-type SetRow = {
-  id: string;
-  workout_date: string;
-  completed_at: number;
-  exercise: string;
-  weight_kg: number;
-  reps: number;
-  heart_rate_bpm: number | null;
-};
-
-type PresetRow = {
-  id: string;
-  name: string;
-  default_weight_kg: number;
-  default_reps: number;
-};
-
-function getDatabase() {
-  return (env as unknown as { DB: Database }).DB;
-}
-
-async function initializeSchema(db: Database) {
-  await db.batch([
-    db.prepare(`CREATE TABLE IF NOT EXISTS workout_sets (
-      id TEXT PRIMARY KEY NOT NULL,
-      device_id TEXT NOT NULL,
-      workout_date TEXT NOT NULL,
-      completed_at INTEGER NOT NULL,
-      exercise TEXT NOT NULL,
-      weight_kg REAL NOT NULL,
-      reps INTEGER NOT NULL,
-      heart_rate_bpm INTEGER
-    )`),
-    db.prepare("CREATE INDEX IF NOT EXISTS workout_sets_device_date_idx ON workout_sets (device_id, workout_date)"),
-    db.prepare(`CREATE TABLE IF NOT EXISTS exercise_presets (
-      id TEXT PRIMARY KEY NOT NULL,
-      device_id TEXT NOT NULL,
-      name TEXT NOT NULL,
-      default_weight_kg REAL NOT NULL,
-      default_reps INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    )`),
-    db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS exercise_presets_device_name_idx ON exercise_presets (device_id, name)"),
-  ]);
-}
-
 function validDate(value: string) {
   return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function parseRecord(value: unknown): RecordInput | null {
+  if (!value || typeof value !== "object") return null;
+
+  const record = value as Partial<RecordInput>;
+  const id = typeof record.id === "string" ? record.id.trim() : "";
+  const exercise = typeof record?.exercise === "string" ? record.exercise.trim() : "";
+  if (
+    !id ||
+    typeof record.workoutDate !== "string" ||
+    !validDate(record.workoutDate) ||
+    typeof record.completedAt !== "number" ||
+    !Number.isSafeInteger(record.completedAt) ||
+    record.completedAt <= 0 ||
+    !exercise ||
+    typeof record.weightKg !== "number" ||
+    !Number.isFinite(record.weightKg) ||
+    record.weightKg < 0 ||
+    typeof record.reps !== "number" ||
+    !Number.isInteger(record.reps) ||
+    record.reps < 1 ||
+    !(
+      record.heartRateBpm === null ||
+      (typeof record.heartRateBpm === "number" &&
+        Number.isInteger(record.heartRateBpm) &&
+        record.heartRateBpm > 0)
+    )
+  ) {
+    return null;
+  }
+
+  return {
+    id,
+    workoutDate: record.workoutDate,
+    completedAt: record.completedAt,
+    exercise,
+    weightKg: record.weightKg,
+    reps: record.reps,
+    heartRateBpm: record.heartRateBpm,
+  };
 }
 
 export async function GET(request: Request) {
@@ -78,99 +65,114 @@ export async function GET(request: Request) {
     return Response.json({ error: "Invalid device or date" }, { status: 400 });
   }
 
-  const db = getDatabase();
-  await initializeSchema(db);
-  const [setResult, presetResult] = await Promise.all([
+  const db = getDb();
+  const [records, presets] = await Promise.all([
     db
-      .prepare(`SELECT id, workout_date, completed_at, exercise, weight_kg, reps, heart_rate_bpm
-        FROM workout_sets WHERE device_id = ? AND workout_date = ? ORDER BY completed_at ASC`)
-      .bind(deviceId, date)
-      .all<SetRow>(),
+      .select({
+        id: workoutSets.id,
+        workoutDate: workoutSets.workoutDate,
+        completedAt: workoutSets.completedAt,
+        exercise: workoutSets.exercise,
+        weightKg: workoutSets.weightKg,
+        reps: workoutSets.reps,
+        heartRateBpm: workoutSets.heartRateBpm,
+      })
+      .from(workoutSets)
+      .where(and(eq(workoutSets.deviceId, deviceId), eq(workoutSets.workoutDate, date)))
+      .orderBy(asc(workoutSets.completedAt)),
     db
-      .prepare(`SELECT id, name, default_weight_kg, default_reps
-        FROM exercise_presets WHERE device_id = ? ORDER BY updated_at DESC`)
-      .bind(deviceId)
-      .all<PresetRow>(),
+      .select({
+        id: exercisePresets.id,
+        name: exercisePresets.name,
+        defaultWeightKg: exercisePresets.defaultWeightKg,
+        defaultReps: exercisePresets.defaultReps,
+      })
+      .from(exercisePresets)
+      .where(eq(exercisePresets.deviceId, deviceId))
+      .orderBy(desc(exercisePresets.updatedAt)),
   ]);
 
-  return Response.json({
-    records: setResult.results.map((row) => ({
-      id: row.id,
-      workoutDate: row.workout_date,
-      completedAt: row.completed_at,
-      exercise: row.exercise,
-      weightKg: row.weight_kg,
-      reps: row.reps,
-      heartRateBpm: row.heart_rate_bpm,
-    })),
-    presets: presetResult.results.map((row) => ({
-      id: row.id,
-      name: row.name,
-      defaultWeightKg: row.default_weight_kg,
-      defaultReps: row.default_reps,
-    })),
-  });
+  return Response.json({ records, presets });
 }
 
 export async function POST(request: Request) {
-  const body = (await request.json()) as { deviceId?: string; record?: RecordInput };
-  const deviceId = body.deviceId?.trim() ?? "";
-  const record = body.record;
-  const exercise = record?.exercise.trim() ?? "";
-  if (
-    !deviceId ||
-    !record ||
-    !record.id ||
-    !validDate(record.workoutDate) ||
-    !exercise ||
-    !Number.isFinite(record.weightKg) ||
-    record.weightKg < 0 ||
-    !Number.isInteger(record.reps) ||
-    record.reps < 1
-  ) {
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
     return Response.json({ error: "Invalid workout set" }, { status: 400 });
   }
 
-  const db = getDatabase();
-  await initializeSchema(db);
-  const presetId = `${deviceId}:${exercise}`;
+  const payload =
+    body && typeof body === "object"
+      ? (body as { deviceId?: unknown; record?: unknown })
+      : {};
+  const deviceId = typeof payload.deviceId === "string" ? payload.deviceId.trim() : "";
+  const record = parseRecord(payload.record);
+  if (!deviceId || !record) {
+    return Response.json({ error: "Invalid workout set" }, { status: 400 });
+  }
+
+  const db = getDb();
+  const [existingRecord] = await db
+    .select({ deviceId: workoutSets.deviceId })
+    .from(workoutSets)
+    .where(eq(workoutSets.id, record.id))
+    .limit(1);
+  if (existingRecord && existingRecord.deviceId !== deviceId) {
+    return Response.json({ error: "Record id belongs to another device" }, { status: 409 });
+  }
+  const presetId = `${deviceId}:${record.exercise}`;
+  const updatedAt = Date.now();
   await db.batch([
     db
-      .prepare(`INSERT INTO workout_sets
-        (id, device_id, workout_date, completed_at, exercise, weight_kg, reps, heart_rate_bpm)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          workout_date = excluded.workout_date,
-          completed_at = excluded.completed_at,
-          exercise = excluded.exercise,
-          weight_kg = excluded.weight_kg,
-          reps = excluded.reps,
-          heart_rate_bpm = excluded.heart_rate_bpm`)
-      .bind(
-        record.id,
+      .insert(workoutSets)
+      .values({
+        id: record.id,
         deviceId,
-        record.workoutDate,
-        record.completedAt,
-        exercise,
-        record.weightKg,
-        record.reps,
-        record.heartRateBpm,
-      ),
+        workoutDate: record.workoutDate,
+        completedAt: record.completedAt,
+        exercise: record.exercise,
+        weightKg: record.weightKg,
+        reps: record.reps,
+        heartRateBpm: record.heartRateBpm,
+      })
+      .onConflictDoUpdate({
+        target: workoutSets.id,
+        set: {
+          workoutDate: record.workoutDate,
+          completedAt: record.completedAt,
+          exercise: record.exercise,
+          weightKg: record.weightKg,
+          reps: record.reps,
+          heartRateBpm: record.heartRateBpm,
+        },
+        setWhere: eq(workoutSets.deviceId, deviceId),
+      }),
     db
-      .prepare(`INSERT INTO exercise_presets
-        (id, device_id, name, default_weight_kg, default_reps, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(device_id, name) DO UPDATE SET
-          default_weight_kg = excluded.default_weight_kg,
-          default_reps = excluded.default_reps,
-          updated_at = excluded.updated_at`)
-      .bind(presetId, deviceId, exercise, record.weightKg, record.reps, Date.now()),
+      .insert(exercisePresets)
+      .values({
+        id: presetId,
+        deviceId,
+        name: record.exercise,
+        defaultWeightKg: record.weightKg,
+        defaultReps: record.reps,
+        updatedAt,
+      })
+      .onConflictDoUpdate({
+        target: [exercisePresets.deviceId, exercisePresets.name],
+        set: {
+          defaultWeightKg: record.weightKg,
+          defaultReps: record.reps,
+          updatedAt,
+        },
+      }),
   ]);
 
   return Response.json({
     preset: {
       id: presetId,
-      name: exercise,
+      name: record.exercise,
       defaultWeightKg: record.weightKg,
       defaultReps: record.reps,
     },
@@ -185,10 +187,10 @@ export async function DELETE(request: Request) {
     return Response.json({ error: "Invalid record" }, { status: 400 });
   }
 
-  const db = getDatabase();
-  await initializeSchema(db);
-  await db.batch([
-    db.prepare("DELETE FROM workout_sets WHERE id = ? AND device_id = ?").bind(id, deviceId),
-  ]);
+  const db = getDb();
+  await db
+    .delete(workoutSets)
+    .where(and(eq(workoutSets.id, id), eq(workoutSets.deviceId, deviceId)))
+    .run();
   return Response.json({ ok: true });
 }

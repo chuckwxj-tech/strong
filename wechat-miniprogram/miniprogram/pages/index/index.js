@@ -1,7 +1,10 @@
 const HEART_RATE_SERVICE = "0000180d-0000-1000-8000-00805f9b34fb";
+const HEART_RATE_MEASUREMENT = "00002a37-0000-1000-8000-00805f9b34fb";
 const HEART_RATE_CHUNK_SIZE = 300;
 const HEART_STORAGE_BATCH_SIZE = 10;
 const HEART_DISPLAY_INTERVAL_MS = 1000;
+const HEART_STORAGE_WARNING_RATIO = 0.8;
+const HEART_RATE_RETENTION_DAYS = 30;
 const RECOVERY_READY_BPM = 20;
 const EXERCISE_LIBRARY_KEY = "exercise_library_v1";
 const LAST_PERFORMANCE_KEY = "exercise_last_performance_v1";
@@ -54,6 +57,13 @@ function createId(prefix) {
 
 function normalizeMeasureType(value) {
   return value === "duration" ? "duration" : "reps";
+}
+
+function normalizeBleUuid(value) {
+  const uuid = String(value || "").toLowerCase();
+  return /^[0-9a-f]{4}$/.test(uuid)
+    ? `0000${uuid}-0000-1000-8000-00805f9b34fb`
+    : uuid;
 }
 
 function defaultMetricValue(measureType) {
@@ -126,7 +136,6 @@ Page({
     const exerciseLibrary = this.loadExerciseLibrary();
     const sets = this.normalizeWorkoutSets(
       wx.getStorageSync(`workout_${this.workoutDateKey}`) || [],
-      exerciseLibrary,
     );
     this.lastPerformanceMap = wx.getStorageSync(LAST_PERFORMANCE_KEY) || {};
     if (!Object.keys(this.lastPerformanceMap).length || Object.values(this.lastPerformanceMap).some((item) => (
@@ -153,7 +162,7 @@ Page({
       timerRemaining: restSeconds,
       timerText: formatClock(restSeconds),
       sets,
-      totalVolume: this.calculateVolume(sets, exerciseLibrary),
+      totalVolume: this.calculateVolume(sets),
       exerciseLibrary,
       quickExercises: this.getQuickExercises(exerciseLibrary),
       templates,
@@ -162,6 +171,9 @@ Page({
     });
 
     this.bleValueHandler = (result) => {
+      if (!result || result.deviceId !== this.data.connectedDeviceId) return;
+      if (!this.heartRateCharacteristicId
+        || normalizeBleUuid(result.characteristicId) !== normalizeBleUuid(this.heartRateCharacteristicId)) return;
       const bytes = new Uint8Array(result.value);
       if (!bytes.length) return;
       const is16Bit = (bytes[0] & 0x01) === 1;
@@ -169,6 +181,20 @@ Page({
       if (heartRate) this.recordHeartRate(heartRate);
     };
     wx.onBLECharacteristicValueChange(this.bleValueHandler);
+
+    this.bleConnectionStateHandler = (result) => {
+      if (!result || result.connected || result.deviceId !== this.data.connectedDeviceId) return;
+      this.saveHeartSamples();
+      this.clearPendingHeartDisplay();
+      this.heartRateCharacteristicId = "";
+      this.setData({
+        connectedDeviceId: "",
+        heartRate: "--",
+        heartStatus: "心率设备已断开，请重新连接",
+      });
+    };
+    wx.onBLEConnectionStateChange(this.bleConnectionStateHandler);
+    this.checkHeartStoragePressure();
   },
 
   onShow() {
@@ -185,6 +211,7 @@ Page({
   onHide() {
     this.clearTimer();
     this.clearFarmerTimer();
+    this.stopStepper();
     this.saveHeartSamples();
   },
 
@@ -199,6 +226,11 @@ Page({
       wx.offBLECharacteristicValueChange(this.bleValueHandler);
       this.bleValueHandler = null;
     }
+    if (this.bleConnectionStateHandler && wx.offBLEConnectionStateChange) {
+      wx.offBLEConnectionStateChange(this.bleConnectionStateHandler);
+      this.bleConnectionStateHandler = null;
+    }
+    this.heartRateCharacteristicId = "";
     if (this.data.connectedDeviceId) {
       wx.closeBLEConnection({ deviceId: this.data.connectedDeviceId, fail: () => {} });
     }
@@ -210,8 +242,8 @@ Page({
     return "reps";
   },
 
-  getSetMetricValue(set, library = this.data.exerciseLibrary) {
-    return this.getSetMeasureType(set, library) === "duration"
+  getSetMetricValue(set) {
+    return this.getSetMeasureType(set) === "duration"
       ? Number(set.durationSeconds ?? set.reps) || 0
       : Number(set.reps) || 0;
   },
@@ -229,10 +261,10 @@ Page({
     };
   },
 
-  normalizeWorkoutSets(sets, library = this.data.exerciseLibrary) {
+  normalizeWorkoutSets(sets) {
     return (sets || []).map((set) => {
-      const measureType = this.getSetMeasureType(set, library);
-      const metricValue = this.getSetMetricValue(set, library);
+      const measureType = this.getSetMeasureType(set);
+      const metricValue = this.getSetMetricValue(set);
       return {
         ...set,
         measureType,
@@ -242,11 +274,11 @@ Page({
     });
   },
 
-  calculateVolume(sets, library = this.data.exerciseLibrary) {
+  calculateVolume(sets) {
     return Math.round(sets.reduce((sum, item) => (
-      this.getSetMeasureType(item, library) === "duration"
+      this.getSetMeasureType(item) === "duration"
         ? sum
-        : sum + Number(item.weight) * this.getSetMetricValue(item, library)
+        : sum + Number(item.weight) * this.getSetMetricValue(item)
     ), 0));
   },
 
@@ -255,7 +287,6 @@ Page({
     if (this.workoutDateKey === currentDateKey) return this.data.sets;
     const sets = this.normalizeWorkoutSets(
       wx.getStorageSync(`workout_${currentDateKey}`) || [],
-      this.data.exerciseLibrary,
     );
     const date = new Date();
     this.workoutDateKey = currentDateKey;
@@ -382,8 +413,8 @@ Page({
       [...sets].reverse().forEach((set) => {
         const exercise = library.find((item) => item.id === set.exerciseId || item.name === set.exerciseName);
         const exerciseId = exercise?.id || set.exerciseId || "";
-        const measureType = this.getSetMeasureType(set, library);
-        const metricValue = this.getSetMetricValue(set, library);
+        const measureType = this.getSetMeasureType(set);
+        const metricValue = this.getSetMetricValue(set);
         const performance = {
           exerciseId,
           exerciseName: set.exerciseName,
@@ -470,6 +501,49 @@ Page({
       // 原始训练组已经保存，缓存失败时继续进入休息页。
     }
     this.setData({ lastPerformance: performance });
+    return performance;
+  },
+
+  refreshLastPerformanceForExercise(exerciseId, exerciseName) {
+    const resolvedExerciseId = exerciseId || this.data.exerciseLibrary.find(
+      (item) => item.name === exerciseName,
+    )?.id || "";
+    const storageKey = this.getExerciseStorageKey(resolvedExerciseId, exerciseName);
+    const nextIndex = { ...(this.lastPerformanceMap || {}) };
+    delete nextIndex[storageKey];
+    delete nextIndex[`name:${exerciseName}`];
+    this.lastPerformanceMap = nextIndex;
+
+    let keys = [];
+    try {
+      keys = wx.getStorageInfoSync?.().keys || [];
+    } catch (error) {
+      keys = [];
+    }
+    const workoutKeys = keys
+      .filter((key) => /^workout_\d{4}-\d{2}-\d{2}$/.test(key))
+      .sort()
+      .reverse();
+    for (const key of workoutKeys) {
+      const sets = wx.getStorageSync(key) || [];
+      const latest = sets.find((set) => (
+        (resolvedExerciseId && set.exerciseId === resolvedExerciseId)
+        || set.exerciseName === exerciseName
+      ));
+      if (latest) {
+        return this.updateLastPerformance({
+          ...latest,
+          dateKey: latest.dateKey || key.replace("workout_", ""),
+        }, sets);
+      }
+    }
+
+    try {
+      wx.setStorageSync(LAST_PERFORMANCE_KEY, this.lastPerformanceMap);
+    } catch (error) {
+      // 删除训练组已经成功，辅助索引失败时不回滚原始记录。
+    }
+    return null;
   },
 
   emptyHeartMeta() {
@@ -523,6 +597,65 @@ Page({
     return this.getHeartStats();
   },
 
+  checkHeartStoragePressure() {
+    if (this.heartStoragePressurePrompted) return;
+    let storageInfo;
+    try {
+      storageInfo = wx.getStorageInfoSync?.();
+    } catch (error) {
+      return;
+    }
+    const currentSize = Number(storageInfo?.currentSize) || 0;
+    const limitSize = Number(storageInfo?.limitSize) || 0;
+    if (!limitSize || currentSize / limitSize < HEART_STORAGE_WARNING_RATIO) return;
+
+    this.heartStoragePressurePrompted = true;
+    wx.showModal({
+      title: "心率存储空间不足",
+      content: `本机存储已使用 ${Math.round((currentSize / limitSize) * 100)}%。是否清理 ${HEART_RATE_RETENTION_DAYS} 天前的原始心率？训练组、重量和次数不会删除。`,
+      confirmText: "清理",
+      success: (result) => {
+        if (!result.confirm) return;
+        const removedDays = this.cleanupOldHeartRateStorage(HEART_RATE_RETENTION_DAYS);
+        wx.showToast({
+          title: removedDays ? `已清理 ${removedDays} 天心率` : "没有可清理的旧心率",
+          icon: "none",
+        });
+      },
+    });
+  },
+
+  cleanupOldHeartRateStorage(retentionDays) {
+    const cutoff = new Date();
+    cutoff.setHours(0, 0, 0, 0);
+    cutoff.setDate(cutoff.getDate() - Math.max(1, Number(retentionDays) || 1));
+    const cutoffKey = `${cutoff.getFullYear()}-${pad(cutoff.getMonth() + 1)}-${pad(cutoff.getDate())}`;
+    let keys = [];
+    try {
+      keys = wx.getStorageInfoSync?.().keys || [];
+    } catch (error) {
+      return 0;
+    }
+    const removedDates = new Set();
+    keys.forEach((key) => {
+      const match = /^heart_rate_(\d{4}-\d{2}-\d{2})(?:_|$)/.exec(key);
+      if (!match || match[1] >= cutoffKey) return;
+      try {
+        wx.removeStorageSync(key);
+        removedDates.add(match[1]);
+      } catch (error) {
+        // 单个键删除失败时继续尝试其他旧心率分块。
+      }
+    });
+    return removedDates.size;
+  },
+
+  notifyHeartStorageFailure() {
+    if (this.heartStorageFailureNotified) return;
+    this.heartStorageFailureNotified = true;
+    wx.showToast({ title: "心率存储失败，请清理空间", icon: "none" });
+  },
+
   addHeartRateToMeta(heartRate) {
     const rate = Number(heartRate);
     this.heartMeta.count += 1;
@@ -551,19 +684,33 @@ Page({
     const snapshot = Array.isArray(data) ? [...data] : { ...data };
     this.heartWriteChain = (this.heartWriteChain || Promise.resolve())
       .then(() => this.setStorageAsync(key, snapshot))
+      .then(() => {
+        if (this.failedHeartWrites) delete this.failedHeartWrites[key];
+      })
       .catch(() => {
         this.heartStorageDirty = true;
+        this.failedHeartWrites = {
+          ...(this.failedHeartWrites || {}),
+          [key]: snapshot,
+        };
+        this.notifyHeartStorageFailure();
       });
     return this.heartWriteChain;
   },
 
   flushHeartStorage() {
-    if (!this.heartStorageDirty || !this.heartStorageBase) return this.heartWriteChain || Promise.resolve();
+    const failedEntries = Object.entries(this.failedHeartWrites || {});
+    if ((!this.heartStorageDirty && !failedEntries.length) || !this.heartStorageBase) {
+      return this.heartWriteChain || Promise.resolve();
+    }
     const chunkKey = `${this.heartStorageBase}_${this.heartMeta.chunkIndex}`;
     const chunk = [...this.heartChunk];
     const meta = { ...this.heartMeta };
     this.heartStorageDirty = false;
     this.pendingChunkSamples = 0;
+    failedEntries.forEach(([failedKey, failedData]) => {
+      this.queueStorageWrite(failedKey, failedData);
+    });
     this.queueStorageWrite(chunkKey, chunk);
     return this.queueStorageWrite(`${this.heartStorageBase}_meta`, meta);
   },
@@ -636,6 +783,12 @@ Page({
     this.setData(update, () => {
       if (this.data.mode === "rest") this.drawHeartSparkline();
     });
+  },
+
+  clearPendingHeartDisplay() {
+    if (this.heartDisplayTimer) clearTimeout(this.heartDisplayTimer);
+    this.heartDisplayTimer = null;
+    this.pendingHeartDisplay = null;
   },
 
   hasFarmerTimingProgress() {
@@ -1113,7 +1266,6 @@ Page({
       templates: committedTemplates,
       sets: this.normalizeWorkoutSets(
         wx.getStorageSync(`workout_${this.workoutDateKey || todayKey()}`) || this.data.sets,
-        committedLibrary,
       ),
       showExerciseManager: !librarySaved,
       newExerciseName: "",
@@ -1330,8 +1482,9 @@ Page({
     this.suppressStepperTap = true;
     this.stepperKey = key;
     this.stepperStep = step;
-    this.adjustMetricValue(key, step);
-    this.stepperInterval = setInterval(() => this.adjustMetricValue(key, step), 120);
+    this.stepperConfigDirty = true;
+    this.adjustMetricValue(key, step, false);
+    this.stepperInterval = setInterval(() => this.adjustMetricValue(key, step, false), 120);
   },
 
   stopStepper() {
@@ -1342,6 +1495,10 @@ Page({
       this.stepperTapReset = setTimeout(() => {
         this.suppressStepperTap = false;
       }, 400);
+    }
+    if (this.stepperConfigDirty) {
+      this.stepperConfigDirty = false;
+      this.saveConfig();
     }
     this.stepperKey = null;
     this.stepperStep = null;
@@ -1358,7 +1515,7 @@ Page({
     this.adjustMetricValue(key, step);
   },
 
-  adjustMetricValue(key, step) {
+  adjustMetricValue(key, step, persist = true) {
     if (key === "weight" && this.isFarmerWeightLocked()) {
       wx.showToast({ title: "计时开始后重量已锁定", icon: "none" });
       return;
@@ -1367,7 +1524,9 @@ Page({
     let next = Math.max(0, current + step);
     if (key === "weight") next = Math.round(next * 10) / 10;
     if (key === "reps") next = Math.round(next);
-    this.setData({ [key]: String(next) }, () => this.saveConfig());
+    this.setData({ [key]: String(next) }, () => {
+      if (persist) this.saveConfig();
+    });
   },
 
   completeSet() {
@@ -1412,7 +1571,6 @@ Page({
       ? this.data.sets
       : this.normalizeWorkoutSets(
         wx.getStorageSync(`workout_${currentDateKey}`) || [],
-        this.data.exerciseLibrary,
       );
     const exercise = this.ensureExerciseInLibrary(exerciseName);
     const now = new Date();
@@ -1639,11 +1797,6 @@ Page({
     }).exec();
   },
 
-  updateRecoveryMetrics(heartRate) {
-    const update = this.getRecoveryUpdate(heartRate);
-    if (Object.keys(update).length) this.setData(update);
-  },
-
   saveRestSummary() {
     const storageDateKey = this.activeSetDateKey || this.workoutDateKey || todayKey();
     const sets = wx.getStorageSync(`workout_${storageDateKey}`) || [];
@@ -1662,7 +1815,7 @@ Page({
     } catch (error) {
       wx.showToast({ title: "恢复摘要未保存，训练组仍已保留", icon: "none" });
     }
-    this.setData({ sets: this.normalizeWorkoutSets(sets, this.data.exerciseLibrary) });
+    this.setData({ sets: this.normalizeWorkoutSets(sets) });
   },
 
   startNextSet() {
@@ -1680,7 +1833,6 @@ Page({
     const sets = dayChanged
       ? this.normalizeWorkoutSets(
         wx.getStorageSync(`workout_${currentDateKey}`) || [],
-        this.data.exerciseLibrary,
       )
       : this.data.sets;
     const now = new Date();
@@ -1711,9 +1863,11 @@ Page({
       content: "删除后将重新计算今天的训练容量。",
       success: (result) => {
         if (!result.confirm) return;
+        const removedSet = this.data.sets.find((item) => item.id === id);
+        if (!removedSet) return;
         const sets = this.data.sets.filter((item) => item.id !== id);
         wx.setStorageSync(`workout_${this.workoutDateKey || todayKey()}`, sets);
-        this.lastPerformanceMap = this.rebuildLastPerformanceIndex(this.data.exerciseLibrary);
+        this.refreshLastPerformanceForExercise(removedSet.exerciseId, removedSet.exerciseName);
         this.setData({
           sets,
           totalVolume: this.calculateVolume(sets),
@@ -1770,7 +1924,11 @@ Page({
     try {
       await wx.openBluetoothAdapter();
       this.registerDeviceFoundListener();
-      await wx.startBluetoothDevicesDiscovery({ allowDuplicatesKey: false, interval: 0 });
+      await wx.startBluetoothDevicesDiscovery({
+        services: ["180D"],
+        allowDuplicatesKey: false,
+        interval: 0,
+      });
     } catch (error) {
       this.stopDeviceDiscovery();
       this.setData({ scanning: false, heartStatus: "蓝牙不可用" });
@@ -1786,14 +1944,16 @@ Page({
     const deviceId = this.data.connectedDeviceId;
     this.saveHeartSamples();
     this.stopDeviceDiscovery();
-    if (deviceId) {
-      wx.closeBLEConnection({ deviceId, fail: () => {} });
-    }
+    this.clearPendingHeartDisplay();
+    this.heartRateCharacteristicId = "";
     this.setData({
       connectedDeviceId: "",
       heartRate: "--",
       heartStatus: "连接心率设备",
     });
+    if (deviceId) {
+      wx.closeBLEConnection({ deviceId, fail: () => {} });
+    }
   },
 
   closeDeviceList() {
@@ -1809,13 +1969,17 @@ Page({
       this.stopDeviceDiscovery();
       await wx.createBLEConnection({ deviceId, timeout: 10000 });
       const serviceResult = await wx.getBLEDeviceServices({ deviceId });
-      const service = serviceResult.services.find((item) => item.uuid.toLowerCase() === HEART_RATE_SERVICE);
+      const service = serviceResult.services.find(
+        (item) => normalizeBleUuid(item.uuid) === HEART_RATE_SERVICE,
+      );
       if (!service) throw new Error("not-heart-rate-device");
       const characteristicResult = await wx.getBLEDeviceCharacteristics({ deviceId, serviceId: service.uuid });
       const characteristic = characteristicResult.characteristics.find(
-        (item) => item.properties.notify || item.properties.indicate,
+        (item) => normalizeBleUuid(item.uuid) === HEART_RATE_MEASUREMENT
+          && (item.properties.notify || item.properties.indicate),
       );
-      if (!characteristic) throw new Error("no-notify-characteristic");
+      if (!characteristic) throw new Error("no-heart-rate-characteristic");
+      this.heartRateCharacteristicId = characteristic.uuid;
       await wx.notifyBLECharacteristicValueChange({
         state: true,
         deviceId,
@@ -1830,6 +1994,7 @@ Page({
       });
       wx.showToast({ title: "心率设备已连接", icon: "success" });
     } catch (error) {
+      this.heartRateCharacteristicId = "";
       wx.closeBLEConnection({ deviceId, fail: () => {} });
       this.setData({ heartStatus: "连接失败，请重试" });
       wx.showModal({

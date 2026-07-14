@@ -20,10 +20,23 @@ function todayKey() {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 }
 
+function dateKeyDaysAgo(days) {
+  const date = new Date();
+  date.setDate(date.getDate() - days);
+  const pad = (value) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
 const storage = new Map();
 const modalResults = [];
 const toasts = [];
 let failingStorageKey = "";
+let storageCurrentSize = 0;
+let storageLimitSize = 10240;
+let discoveryOptions;
+let notificationOptions;
+let createConnectionCount = 0;
+let emitDisconnectOnClose = false;
 const dateKey = todayKey();
 storage.set("recent_exercises", ["杠铃卧推", "器械推胸"]);
 storage.set(`workout_${dateKey}`, [{
@@ -45,9 +58,20 @@ const wx = {
     storage.set(key, clone(value));
   },
   getStorageInfoSync() {
-    return { keys: [...storage.keys()] };
+    return {
+      keys: [...storage.keys()],
+      currentSize: storageCurrentSize,
+      limitSize: storageLimitSize,
+    };
   },
-  setStorage({ key, data, success }) {
+  removeStorageSync(key) {
+    storage.delete(key);
+  },
+  setStorage({ key, data, success, fail }) {
+    if (key === failingStorageKey) {
+      if (fail) fail(new Error("mock quota exceeded"));
+      return;
+    }
     storage.set(key, clone(data));
     if (success) success();
   },
@@ -61,11 +85,59 @@ const wx = {
   onBLECharacteristicValueChange(handler) {
     this.bleHandler = handler;
   },
-  offBLECharacteristicValueChange() {},
+  offBLECharacteristicValueChange(handler) {
+    this.offBleHandler = handler;
+    if (this.bleHandler === handler) this.bleHandler = null;
+  },
+  onBLEConnectionStateChange(handler) {
+    this.bleConnectionStateHandler = handler;
+  },
+  offBLEConnectionStateChange(handler) {
+    this.offBleConnectionStateHandler = handler;
+    if (this.bleConnectionStateHandler === handler) this.bleConnectionStateHandler = null;
+  },
+  openBluetoothAdapter() {},
+  startBluetoothDevicesDiscovery(options) {
+    discoveryOptions = options;
+  },
+  onBluetoothDeviceFound(handler) {
+    this.deviceFoundHandler = handler;
+  },
   setKeepScreenOn() {},
   stopBluetoothDevicesDiscovery() {},
-  offBluetoothDeviceFound() {},
-  closeBLEConnection() {},
+  offBluetoothDeviceFound(handler) {
+    if (this.deviceFoundHandler === handler) this.deviceFoundHandler = null;
+  },
+  createBLEConnection() {
+    createConnectionCount += 1;
+  },
+  getBLEDeviceServices() {
+    return { services: [{ uuid: "0000180D-0000-1000-8000-00805F9B34FB" }] };
+  },
+  getBLEDeviceCharacteristics() {
+    return {
+      characteristics: [
+        {
+          uuid: "00002A38-0000-1000-8000-00805F9B34FB",
+          properties: { notify: true },
+        },
+        {
+          uuid: "00002A37-0000-1000-8000-00805F9B34FB",
+          properties: { notify: true },
+        },
+      ],
+    };
+  },
+  notifyBLECharacteristicValueChange(options) {
+    notificationOptions = options;
+  },
+  closeBLEConnection({ deviceId }) {
+    if (emitDisconnectOnClose && this.bleConnectionStateHandler) {
+      this.bleConnectionStateHandler({ deviceId, connected: false });
+    }
+  },
+  showLoading() {},
+  hideLoading() {},
   vibrateShort() {},
   vibrateLong() {},
   createSelectorQuery() {
@@ -99,6 +171,31 @@ page.setData = function setData(update, callback) {
 };
 
 page.onLoad();
+assert.strictEqual(typeof wx.bleHandler, "function", "heart-rate notifications should be registered once");
+assert.strictEqual(typeof wx.bleConnectionStateHandler, "function", "BLE connection changes should be registered once");
+
+const expiredHeartDate = dateKeyDaysAgo(45);
+const expiredHeartMetaKey = `heart_rate_${expiredHeartDate}_meta`;
+const expiredHeartChunkKey = `heart_rate_${expiredHeartDate}_0`;
+const expiredWorkoutKey = `workout_${expiredHeartDate}`;
+storage.set(expiredHeartMetaKey, { chunkIndex: 0, count: 1, sum: 120, min: 120, max: 120 });
+storage.set(expiredHeartChunkKey, [[Date.now(), 120]]);
+storage.set(expiredWorkoutKey, [{ id: 9001, exerciseName: "存储测试动作", weight: 10, reps: 1 }]);
+storageCurrentSize = 9000;
+storageLimitSize = 10000;
+page.heartStoragePressurePrompted = false;
+modalResults.push({ confirm: false, cancel: true });
+page.checkHeartStoragePressure();
+assert(storage.has(expiredHeartChunkKey), "old raw heart rate must not be deleted without confirmation");
+page.heartStoragePressurePrompted = false;
+modalResults.push({ confirm: true, cancel: false });
+page.checkHeartStoragePressure();
+assert(!storage.has(expiredHeartMetaKey), "confirmed cleanup should remove old heart-rate metadata");
+assert(!storage.has(expiredHeartChunkKey), "confirmed cleanup should remove every old heart-rate chunk");
+assert(storage.has(expiredWorkoutKey), "heart-rate cleanup must preserve workout sets");
+storage.delete(expiredWorkoutKey);
+storageCurrentSize = 0;
+storageLimitSize = 10240;
 assert(page.data.exerciseLibrary.length >= 14, "legacy actions should migrate into the full library");
 assert(page.data.quickExercises.length > 2, "training page should show more than two quick actions");
 assert(page.data.exerciseLibrary.some((item) => item.name === "器械推胸"), "custom legacy action should remain");
@@ -274,6 +371,18 @@ page.recordHeartRate(132);
 assert.strictEqual(page.data.heartRate, 132, "heart-rate display should still update");
 assert.strictEqual(page.data.heartSampleCount, 1, "heart-rate samples should still be counted");
 
+const originalSaveConfig = page.saveConfig;
+let stepperSaveCount = 0;
+page.saveConfig = () => { stepperSaveCount += 1; };
+page.startStepper({ currentTarget: { dataset: { key: "weight", step: 2.5 } } });
+assert.strictEqual(stepperSaveCount, 0, "holding a stepper should not write config on every tick");
+page.onHide();
+assert.strictEqual(stepperSaveCount, 1, "hiding during a held stepper should stop it and persist config once");
+assert.strictEqual(page.stepperInterval, null, "a held stepper must not continue after the page is hidden");
+page.stepMetric({ currentTarget: { dataset: { key: "weight", step: 2.5 } } });
+assert.strictEqual(stepperSaveCount, 2, "a normal stepper tap should still persist immediately");
+page.saveConfig = originalSaveConfig;
+
 failingStorageKey = "exercise_last_performance_v1";
 Object.assign(page.data, {
   mode: "training",
@@ -333,6 +442,10 @@ const syntheticSets = [
 storage.set(`workout_${dateKey}`, clone(syntheticSets));
 Object.assign(page.data, { sets: clone(syntheticSets), exerciseId: bench.id, exerciseName: "平板卧推" });
 page.lastPerformanceMap = page.rebuildLastPerformanceIndex(page.data.exerciseLibrary);
+const originalRebuildLastPerformanceIndex = page.rebuildLastPerformanceIndex;
+page.rebuildLastPerformanceIndex = () => {
+  throw new Error("deleting one set must not rebuild every historical action");
+};
 
 modalResults.push({ confirm: true, cancel: false });
 page.removeSet({ currentTarget: { dataset: { id: 102 } } });
@@ -343,6 +456,7 @@ assert.strictEqual(page.data.lastPerformance.weight, 70, "deleting the latest se
 modalResults.push({ confirm: true, cancel: false });
 page.removeSet({ currentTarget: { dataset: { id: 101 } } });
 assert.strictEqual(page.data.lastPerformance.weight, 60, "deleting today's last set should fall back to the previous day's performance");
+page.rebuildLastPerformanceIndex = originalRebuildLastPerformanceIndex;
 
 const timedSyntheticSets = [
   { id: 202, exerciseId: farmerWalk.id, exerciseName: farmerWalk.name, measureType: "duration", durationSeconds: 60, reps: 60, weight: 24, restSeconds: 90, time: "12:02", dateKey },
@@ -410,6 +524,17 @@ assert.strictEqual(page.data.lastPerformance.trackingMode, "farmer_sides", "dele
 assert.strictEqual(page.data.lastPerformance.leftDurationSeconds, 40, "deletion fallback should restore left-side duration");
 assert.strictEqual(page.data.lastPerformance.rightDurationSeconds, 37, "deletion fallback should restore right-side duration");
 
+const mixedIdSets = [
+  { id: 402, exerciseId: bench.id, exerciseName: "平板卧推", weight: 90, reps: 4, restSeconds: 90, time: "12:06", dateKey },
+  { id: 401, exerciseName: "平板卧推", weight: 85, reps: 5, restSeconds: 90, time: "12:05", dateKey },
+];
+storage.set(`workout_${dateKey}`, clone(mixedIdSets));
+Object.assign(page.data, { sets: clone(mixedIdSets), exerciseId: bench.id, exerciseName: "平板卧推" });
+page.lastPerformanceMap = page.rebuildLastPerformanceIndex(page.data.exerciseLibrary);
+modalResults.push({ confirm: true, cancel: false });
+page.removeSet({ currentTarget: { dataset: { id: 401 } } });
+assert.strictEqual(page.data.lastPerformance.weight, 90, "deleting a legacy id-less set should retain a newer id-based performance");
+
 const sanitizedWxml = wxml.replace(/\{\{[\s\S]*?\}\}/g, "expression");
 const stack = [];
 const voidTags = new Set(["input", "image"]);
@@ -436,4 +561,88 @@ for (const character of wxss.replace(/\/\*[\s\S]*?\*\//g, "")) {
 }
 assert.strictEqual(braceDepth, 0, "WXSS braces should be balanced");
 
-console.log("index logic and static checks passed");
+async function verifyBleFlow() {
+  failingStorageKey = "heart_rate_failure_test";
+  page.heartStorageFailureNotified = false;
+  await page.queueStorageWrite(failingStorageKey, [[Date.now(), 130]]);
+  assert(toasts.includes("心率存储失败，请清理空间"), "heart-rate storage failures should be visible to the user");
+  assert(page.failedHeartWrites[failingStorageKey], "a failed completed chunk should remain queued for retry");
+  failingStorageKey = "";
+  await page.flushHeartStorage();
+  assert(storage.has("heart_rate_failure_test"), "a failed completed chunk should be retried on the next flush");
+
+  await page.startHeartRateScan();
+  assert(discoveryOptions, "heart-rate scanning should start discovery");
+  assert.strictEqual(discoveryOptions.services.length, 1, "discovery should request one BLE service");
+  assert.strictEqual(discoveryOptions.services[0], "180D", "discovery should only request the standard heart-rate service");
+
+  const deviceEvent = {
+    currentTarget: { dataset: { id: "heart-device", name: "Test HR Belt" } },
+  };
+  await page.connectDevice(deviceEvent);
+  assert(notificationOptions, "connecting should enable heart-rate notifications");
+  assert.strictEqual(
+    notificationOptions.characteristicId.toLowerCase(),
+    "00002a37-0000-1000-8000-00805f9b34fb",
+    "connecting should select 2A37 even when another notify characteristic appears first",
+  );
+  assert.strictEqual(page.data.connectedDeviceId, "heart-device", "the connected heart-rate device should update UI state");
+
+  const sampleCount = page.data.heartSampleCount;
+  const packet = Uint8Array.from([0, 140]).buffer;
+  wx.bleHandler({
+    deviceId: "other-device",
+    characteristicId: notificationOptions.characteristicId,
+    value: packet,
+  });
+  wx.bleHandler({
+    deviceId: "heart-device",
+    characteristicId: "00002a38-0000-1000-8000-00805f9b34fb",
+    value: packet,
+  });
+  assert.strictEqual(page.data.heartSampleCount, sampleCount, "notifications from another device or characteristic must be ignored");
+  wx.bleHandler({
+    deviceId: "heart-device",
+    characteristicId: notificationOptions.characteristicId,
+    value: packet,
+  });
+  assert.strictEqual(page.data.heartSampleCount, sampleCount + 1, "the selected device's 2A37 notification should be recorded");
+
+  page.pendingHeartDisplay = { heartRate: 155, heartStatus: "心率实时记录中" };
+  page.heartDisplayTimer = 99;
+  wx.bleConnectionStateHandler({ deviceId: "other-device", connected: false });
+  assert.strictEqual(page.data.connectedDeviceId, "heart-device", "an unrelated BLE disconnect must not alter heart-rate UI");
+  assert(page.pendingHeartDisplay, "an unrelated BLE disconnect must not discard the active device's pending display");
+  wx.bleConnectionStateHandler({ deviceId: "heart-device", connected: false });
+  assert.strictEqual(page.data.connectedDeviceId, "", "an unexpected heart-rate disconnect should clear the connected device");
+  assert.strictEqual(page.data.heartRate, "--", "an unexpected disconnect should clear stale live heart rate");
+  assert.match(page.data.heartStatus, /已断开/, "an unexpected disconnect should be visible in the UI");
+  assert.strictEqual(page.pendingHeartDisplay, null, "an unexpected disconnect should discard throttled stale heart rate");
+  assert.strictEqual(page.heartDisplayTimer, null, "an unexpected disconnect should cancel the throttled display timer");
+  page.flushHeartDisplay();
+  assert.strictEqual(page.data.heartRate, "--", "a stale display flush must not restore heart rate after disconnect");
+
+  await page.connectDevice(deviceEvent);
+  const connectionsBeforeManualDisconnect = createConnectionCount;
+  page.pendingHeartDisplay = { heartRate: 151, heartStatus: "心率实时记录中" };
+  page.heartDisplayTimer = 100;
+  emitDisconnectOnClose = true;
+  page.disconnectHeartRate();
+  emitDisconnectOnClose = false;
+  assert.strictEqual(page.data.heartStatus, "连接心率设备", "a manual disconnect should return to the normal disconnected state");
+  assert.strictEqual(createConnectionCount, connectionsBeforeManualDisconnect, "a manual disconnect must not trigger a reconnect loop");
+  assert.strictEqual(page.pendingHeartDisplay, null, "a manual disconnect should discard throttled stale heart rate");
+
+  const valueHandler = wx.bleHandler;
+  const connectionHandler = wx.bleConnectionStateHandler;
+  page.onUnload();
+  assert.strictEqual(wx.offBleHandler, valueHandler, "unload should remove the exact heart-rate notification listener");
+  assert.strictEqual(wx.offBleConnectionStateHandler, connectionHandler, "unload should remove the exact BLE connection listener");
+}
+
+verifyBleFlow()
+  .then(() => console.log("index logic and static checks passed"))
+  .catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });

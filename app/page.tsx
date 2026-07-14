@@ -67,6 +67,12 @@ function playFinishCue() {
   try {
     const AudioContextClass = window.AudioContext;
     const audio = new AudioContextClass();
+    let closed = false;
+    const closeAudio = () => {
+      if (closed) return;
+      closed = true;
+      void audio.close();
+    };
     const oscillator = audio.createOscillator();
     const gain = audio.createGain();
     oscillator.frequency.value = 720;
@@ -74,8 +80,10 @@ function playFinishCue() {
     gain.gain.exponentialRampToValueAtTime(0.22, audio.currentTime + 0.02);
     gain.gain.exponentialRampToValueAtTime(0.0001, audio.currentTime + 0.35);
     oscillator.connect(gain).connect(audio.destination);
+    oscillator.addEventListener("ended", closeAudio, { once: true });
     oscillator.start();
     oscillator.stop(audio.currentTime + 0.36);
+    window.setTimeout(closeAudio, 1000);
   } catch {
     // Vibration remains the fallback on devices that block background audio.
   }
@@ -231,6 +239,7 @@ export default function Home() {
       });
       setSaveStatus("本组已保存");
     } catch {
+      setRecords((current) => current.filter((entry) => entry.id !== item.id));
       setSaveStatus("本组未同步，请稍后再试");
     }
   };
