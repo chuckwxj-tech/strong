@@ -708,8 +708,8 @@ Page({
     const meta = { ...this.heartMeta };
     this.heartStorageDirty = false;
     this.pendingChunkSamples = 0;
-    failedEntries.forEach(([failedKey, failedData]) => {
-      this.queueStorageWrite(failedKey, failedData);
+    failedEntries.forEach((entry) => {
+      this.queueStorageWrite(entry[0], entry[1]);
     });
     this.queueStorageWrite(chunkKey, chunk);
     return this.queueStorageWrite(`${this.heartStorageBase}_meta`, meta);
