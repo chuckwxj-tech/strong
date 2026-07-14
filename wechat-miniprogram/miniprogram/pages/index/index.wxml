@@ -29,20 +29,46 @@
       </button>
     </view>
 
+    <view wx:if="{{!isKettlebellMode}}" class="kettlebell-entry" bindtap="startKettlebellProgram">
+      <view class="kettlebell-entry-mark">KB</view>
+      <view class="kettlebell-entry-copy">
+        <view class="kettlebell-entry-title">壶铃专项</view>
+        <view class="kettlebell-entry-subtitle">农夫行走 + 6 个核心动作</view>
+      </view>
+      <view class="kettlebell-entry-action">开始</view>
+    </view>
+    <view wx:else class="kettlebell-mode-banner">
+      <view>
+        <view class="kettlebell-mode-title">壶铃专项训练</view>
+        <view class="kettlebell-mode-subtitle">计数、左右计时与心率同步保存</view>
+      </view>
+      <view class="kettlebell-mode-exit" bindtap="exitKettlebellProgram">退出专项</view>
+    </view>
+
     <view class="workout-card">
       <view class="exercise-field-heading">
-        <view class="field-label">当前动作</view>
+        <view class="field-label">{{isKettlebellMode ? '选择壶铃动作' : '当前动作'}}</view>
         <view class="exercise-tools">
-          <view class="manage-exercises" bindtap="openExerciseManager">动作库</view>
-          <view class="manage-exercises" bindtap="openTemplateManager">训练模板</view>
+          <view class="manage-exercises" bindtap="openExerciseManager">{{isKettlebellMode ? '编辑动作' : '动作库'}}</view>
+          <view wx:if="{{!isKettlebellMode}}" class="manage-exercises" bindtap="openTemplateManager">训练模板</view>
         </view>
       </view>
-      <input class="exercise-input" value="{{exerciseName}}" data-key="exerciseName" bindinput="onFieldInput" bindblur="onFieldBlur" disabled="{{farmerActiveSide || farmerLeftDurationMs || farmerRightDurationMs}}" placeholder="输入动作名称" />
-      <view class="recent-exercises">
-        <view wx:for="{{quickExercises}}" wx:key="id" class="exercise-chip {{exerciseId === item.id ? 'exercise-chip--active' : ''}}" data-id="{{item.id}}" bindtap="selectExercise">{{item.name}}</view>
-      </view>
+      <block wx:if="{{isKettlebellMode}}">
+        <view class="kettlebell-selector">
+          <view wx:for="{{kettlebellExercises}}" wx:key="id" class="kettlebell-action {{item.id === 'farmer_walk' ? 'kettlebell-action--farmer' : ''}} {{exerciseId === item.id ? 'kettlebell-action--active' : ''}}" data-id="{{item.id}}" data-kettlebell="true" bindtap="selectExercise">
+            <view class="kettlebell-action-title">{{item.name}}</view>
+            <view class="kettlebell-action-meta">{{item.id === 'farmer_walk' ? '左右手分别计时' : (item.measureType === 'duration' ? '按时长记录' : '按次数记录')}}</view>
+          </view>
+        </view>
+      </block>
+      <block wx:else>
+        <input class="exercise-input" value="{{exerciseName}}" data-key="exerciseName" bindinput="onFieldInput" bindblur="onFieldBlur" disabled="{{farmerActiveSide || farmerLeftDurationMs || farmerRightDurationMs}}" placeholder="输入动作名称" />
+        <view class="recent-exercises">
+          <view wx:for="{{quickExercises}}" wx:key="id" class="exercise-chip {{exerciseId === item.id ? 'exercise-chip--active' : ''}}" data-id="{{item.id}}" bindtap="selectExercise">{{item.name}}</view>
+        </view>
+      </block>
 
-      <view wx:if="{{activeTemplateId}}" class="active-template">
+      <view wx:if="{{activeTemplateId && !isKettlebellMode}}" class="active-template">
         <view class="active-template-heading">
           <view><text>正在使用模板</text><view>{{activeTemplateName}}</view></view>
           <view class="active-template-close" bindtap="clearActiveTemplate">结束</view>
@@ -186,7 +212,10 @@
       <view wx:for="{{sets}}" wx:key="id" class="set-row">
         <view class="set-number">{{sets.length - index}}</view>
         <view class="set-copy">
-          <view class="set-name">{{item.exerciseName}}</view>
+          <view class="set-name-row">
+            <view class="set-name">{{item.exerciseName}}</view>
+            <view wx:if="{{item.programId === 'kettlebell_specialty'}}" class="set-program-badge">壶铃专项</view>
+          </view>
           <view class="set-time">{{item.time}}</view>
         </view>
         <view wx:if="{{item.trackingMode === 'farmer_sides'}}" class="set-result set-result--farmer">

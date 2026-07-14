@@ -9,7 +9,18 @@ const RECOVERY_READY_BPM = 20;
 const EXERCISE_LIBRARY_KEY = "exercise_library_v1";
 const LAST_PERFORMANCE_KEY = "exercise_last_performance_v1";
 const WORKOUT_TEMPLATES_KEY = "workout_templates_v1";
-const MUSCLE_GROUPS = ["胸部", "背部", "肩部", "手臂", "臀腿", "核心", "其他"];
+const KETTLEBELL_PROGRAM_ID = "kettlebell_specialty";
+const KETTLEBELL_PROGRAM_NAME = "壶铃专项";
+const KETTLEBELL_EXERCISE_IDS = [
+  "farmer_walk",
+  "kettlebell_swing",
+  "kettlebell_high_pull",
+  "kettlebell_snatch",
+  "kettlebell_press",
+  "kettlebell_squat",
+  "kettlebell_thruster",
+];
+const MUSCLE_GROUPS = ["胸部", "背部", "肩部", "手臂", "臀腿", "核心", "壶铃", "其他"];
 const MEASURE_TYPES = [
   { value: "reps", label: "次数" },
   { value: "duration", label: "计时" },
@@ -28,7 +39,13 @@ const DEFAULT_EXERCISES = [
   { id: "barbell_squat", name: "深蹲", group: "臀腿", favorite: true },
   { id: "leg_press", name: "腿举", group: "臀腿", favorite: false },
   { id: "plank", name: "平板支撑", group: "核心", favorite: false, measureType: "duration" },
-  { id: "farmer_walk", name: "农夫行走", group: "其他", favorite: false, measureType: "duration" },
+  { id: "farmer_walk", name: "农夫行走", group: "壶铃", favorite: false, measureType: "duration" },
+  { id: "kettlebell_swing", name: "壶铃摇摆", group: "壶铃", favorite: false },
+  { id: "kettlebell_high_pull", name: "壶铃高拉", group: "壶铃", favorite: false },
+  { id: "kettlebell_snatch", name: "壶铃抓举", group: "壶铃", favorite: false },
+  { id: "kettlebell_press", name: "壶铃推举", group: "壶铃", favorite: false },
+  { id: "kettlebell_squat", name: "壶铃深蹲", group: "壶铃", favorite: false },
+  { id: "kettlebell_thruster", name: "壶铃火箭推", group: "壶铃", favorite: false },
 ];
 
 function pad(value) {
@@ -108,6 +125,8 @@ Page({
     connectedDeviceId: "",
     exerciseLibrary: [],
     quickExercises: [],
+    kettlebellExercises: [],
+    isKettlebellMode: false,
     muscleGroups: MUSCLE_GROUPS,
     measureTypes: MEASURE_TYPES,
     showExerciseManager: false,
@@ -165,6 +184,7 @@ Page({
       totalVolume: this.calculateVolume(sets),
       exerciseLibrary,
       quickExercises: this.getQuickExercises(exerciseLibrary),
+      kettlebellExercises: this.getKettlebellExercises(exerciseLibrary),
       templates,
       lastPerformance: this.findLastPerformance(selectedExercise?.id, selectedExercise?.name || configuredName),
       ...heartStats,
@@ -373,6 +393,19 @@ Page({
     const favorites = active.filter((item) => item.favorite);
     const others = active.filter((item) => !item.favorite);
     return [...favorites, ...others].slice(0, 6);
+  },
+
+  getKettlebellExercises(library = this.data.exerciseLibrary) {
+    const active = (library || []).filter((item) => !item.archived);
+    const builtIn = KETTLEBELL_EXERCISE_IDS.map((id) => {
+      const defaultExercise = DEFAULT_EXERCISES.find((item) => item.id === id);
+      return active.find((item) => item.id === id || item.name === defaultExercise?.name);
+    }).filter(Boolean);
+    const builtInIds = builtIn.map((item) => item.id);
+    const custom = active.filter((item) => (
+      item.group === "壶铃" && !builtInIds.includes(item.id)
+    ));
+    return [...builtIn, ...custom];
   },
 
   loadWorkoutTemplates() {
@@ -983,10 +1016,12 @@ Page({
   },
 
   selectExercise(event) {
+    const isKettlebellSelection = Boolean(event.currentTarget.dataset.kettlebell);
     const exercise = this.data.exerciseLibrary.find((item) => (
       item.id === event.currentTarget.dataset.id && !item.archived
     ));
     if (!exercise) return;
+    const selectionChanged = exercise.id !== this.data.exerciseId;
     if (exercise.id !== this.data.exerciseId && this.guardFarmerTimingProgress()) return;
     if (exercise.id !== this.data.exerciseId) this.resetFarmerTiming();
     const performance = this.findLastPerformance(exercise.id, exercise.name);
@@ -1009,6 +1044,12 @@ Page({
         ? performance.reps
         : defaultMetricValue(measureType));
       update.restSeconds = String(performance.restSeconds);
+    } else if (isKettlebellSelection && selectionChanged) {
+      update.weight = "0";
+      update.reps = String(defaultMetricValue(measureType));
+      update.restSeconds = "90";
+      update.timerRemaining = 90;
+      update.timerText = formatClock(90);
     } else if (this.data.measureType !== measureType) {
       update.reps = String(defaultMetricValue(measureType));
     }
@@ -1036,7 +1077,11 @@ Page({
       library = [exercise, ...library];
     }
     this.persistExerciseLibrary(library);
-    this.setData({ exerciseLibrary: library, quickExercises: this.getQuickExercises(library) });
+    this.setData({
+      exerciseLibrary: library,
+      quickExercises: this.getQuickExercises(library),
+      kettlebellExercises: this.getKettlebellExercises(library),
+    });
     return exercise;
   },
 
@@ -1045,7 +1090,10 @@ Page({
       const matchesMode = mode === "archived"
         ? item.archived
         : !item.archived && (mode !== "favorites" || item.favorite);
-      return matchesMode && (group === "全部" || item.group === group);
+      const matchesGroup = group === "全部"
+        || item.group === group
+        || (group === "壶铃" && KETTLEBELL_EXERCISE_IDS.includes(item.id));
+      return matchesMode && matchesGroup;
     });
   },
 
@@ -1069,15 +1117,19 @@ Page({
       groupIndex: Math.max(0, MUSCLE_GROUPS.indexOf(item.group)),
       measureTypeIndex: MEASURE_TYPES.findIndex((type) => type.value === item.measureType),
     }));
+    const libraryMode = this.data.isKettlebellMode ? "all" : "favorites";
+    const libraryGroup = this.data.isKettlebellMode ? "壶铃" : "全部";
     this.setData({
       showExerciseManager: true,
       draftExercises,
-      filteredDraftExercises: this.filterDraftExercises(draftExercises, "favorites", "全部"),
-      libraryMode: "favorites",
-      libraryGroup: "全部",
+      filteredDraftExercises: this.filterDraftExercises(draftExercises, libraryMode, libraryGroup),
+      libraryMode,
+      libraryGroup,
       newExerciseName: "",
-      newExerciseGroup: "其他",
-      newExerciseGroupIndex: MUSCLE_GROUPS.length - 1,
+      newExerciseGroup: this.data.isKettlebellMode ? "壶铃" : "其他",
+      newExerciseGroupIndex: this.data.isKettlebellMode
+        ? MUSCLE_GROUPS.indexOf("壶铃")
+        : MUSCLE_GROUPS.length - 1,
       newExerciseMeasureType: "reps",
       newExerciseMeasureTypeIndex: 0,
     });
@@ -1199,13 +1251,17 @@ Page({
       },
       ...this.data.draftExercises,
     ];
+    const libraryMode = this.data.isKettlebellMode ? "all" : "favorites";
+    const libraryGroup = this.data.isKettlebellMode ? "壶铃" : "全部";
     this.setData({
       newExerciseName: "",
-      newExerciseGroup: "其他",
-      newExerciseGroupIndex: MUSCLE_GROUPS.length - 1,
+      newExerciseGroup: this.data.isKettlebellMode ? "壶铃" : "其他",
+      newExerciseGroupIndex: this.data.isKettlebellMode
+        ? MUSCLE_GROUPS.indexOf("壶铃")
+        : MUSCLE_GROUPS.length - 1,
       newExerciseMeasureType: "reps",
       newExerciseMeasureTypeIndex: 0,
-    }, () => this.refreshExerciseDraftView(draftExercises, "favorites", "全部"));
+    }, () => this.refreshExerciseDraftView(draftExercises, libraryMode, libraryGroup));
   },
 
   saveExerciseOptions() {
@@ -1263,6 +1319,7 @@ Page({
     const update = {
       exerciseLibrary: committedLibrary,
       quickExercises: this.getQuickExercises(committedLibrary),
+      kettlebellExercises: this.getKettlebellExercises(committedLibrary),
       templates: committedTemplates,
       sets: this.normalizeWorkoutSets(
         wx.getStorageSync(`workout_${this.workoutDateKey || todayKey()}`) || this.data.sets,
@@ -1345,6 +1402,32 @@ Page({
     this.setData({ showTemplateManager: false });
   },
 
+  startKettlebellProgram() {
+    if (this.data.mode !== "training" || this.guardFarmerTimingProgress()) return;
+    const exercises = this.getKettlebellExercises();
+    if (!exercises.length) {
+      wx.showToast({ title: "请先在动作库恢复壶铃动作", icon: "none" });
+      return;
+    }
+    const selected = exercises.find((item) => item.id === this.data.exerciseId) || exercises[0];
+    this.setData({
+      isKettlebellMode: true,
+      showTemplateManager: false,
+      activeTemplateId: "",
+      activeTemplateName: "",
+      activeTemplateExercises: [],
+      activeTemplateIndex: -1,
+    }, () => {
+      this.selectExercise({
+        currentTarget: { dataset: { id: selected.id, kettlebell: true } },
+      });
+    });
+  },
+
+  exitKettlebellProgram() {
+    this.setData({ isKettlebellMode: false });
+  },
+
   saveTodayAsTemplate() {
     const exercises = this.buildTemplateExercisesFromToday(this.refreshWorkoutDay());
     if (!exercises.length) {
@@ -1391,6 +1474,7 @@ Page({
     const template = this.data.templates.find((item) => item.id === event.currentTarget.dataset.id);
     if (!template?.exercises.length) return;
     this.setData({
+      isKettlebellMode: false,
       showTemplateManager: false,
       activeTemplateId: template.id,
       activeTemplateName: template.name,
@@ -1437,6 +1521,7 @@ Page({
 
   clearActiveTemplate() {
     this.setData({
+      isKettlebellMode: false,
       activeTemplateId: "",
       activeTemplateName: "",
       activeTemplateExercises: [],
@@ -1573,11 +1658,17 @@ Page({
         wx.getStorageSync(`workout_${currentDateKey}`) || [],
       );
     const exercise = this.ensureExerciseInLibrary(exerciseName);
+    const isKettlebellSet = this.data.isKettlebellMode
+      && this.data.kettlebellExercises.some((item) => item.id === exercise.id);
     const now = new Date();
     const set = {
       id: now.getTime(),
       exerciseId: exercise.id,
       exerciseName,
+      ...(isKettlebellSet ? {
+        programId: KETTLEBELL_PROGRAM_ID,
+        programName: KETTLEBELL_PROGRAM_NAME,
+      } : {}),
       measureType,
       weight,
       reps: metricValue,

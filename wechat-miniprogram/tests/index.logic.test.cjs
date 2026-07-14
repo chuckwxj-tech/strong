@@ -205,6 +205,32 @@ assert(bench, "default bench press should exist");
 const farmerWalk = page.data.exerciseLibrary.find((item) => item.id === "farmer_walk");
 assert(farmerWalk, "farmer walk should be added to migrated libraries");
 assert.strictEqual(farmerWalk.measureType, "duration", "farmer walk should default to duration tracking");
+const kettlebellExerciseIds = [
+  "farmer_walk",
+  "kettlebell_swing",
+  "kettlebell_high_pull",
+  "kettlebell_snatch",
+  "kettlebell_press",
+  "kettlebell_squat",
+  "kettlebell_thruster",
+];
+assert.deepStrictEqual(
+  page.data.kettlebellExercises.map((item) => item.id),
+  kettlebellExerciseIds,
+  "the kettlebell specialty should contain farmer walk and the six core movements",
+);
+page.data.kettlebellExercises.filter((item) => item.id !== "farmer_walk").forEach((item) => {
+  assert.strictEqual(item.measureType, "reps", `${item.name} should default to rep counting`);
+});
+assert.strictEqual(page.data.templates.length, 0, "the built-in kettlebell specialty must not overwrite user templates");
+page.startKettlebellProgram();
+assert.strictEqual(page.data.isKettlebellMode, true, "the kettlebell entry should open a dedicated training mode");
+assert.strictEqual(page.data.exerciseId, farmerWalk.id, "the specialty should open on farmer walk first");
+assert.strictEqual(
+  page.normalizeWorkoutSets([{ exerciseName: "壶铃摇摆", weight: 12, reps: 20 }])[0].measureType,
+  "reps",
+  "legacy kettlebell records without an explicit type must remain rep-based",
+);
 assert.strictEqual(
   page.data.exerciseLibrary.find((item) => item.id === "plank").measureType,
   "duration",
@@ -267,6 +293,7 @@ page.completeSet();
 const farmerSet = storage.get(`workout_${dateKey}`)[0];
 assert.strictEqual(farmerSet.measureType, "duration", "timed sets should store their measure type");
 assert.strictEqual(farmerSet.trackingMode, "farmer_sides", "farmer walk should store side-based tracking");
+assert.strictEqual(farmerSet.programId, "kettlebell_specialty", "farmer walk should be tagged as part of the kettlebell specialty");
 assert(farmerSet.leftDurationSeconds >= 40, "farmer walk should store left-side seconds");
 assert(farmerSet.rightDurationSeconds >= 37, "farmer walk should store right-side seconds");
 assert.strictEqual(
@@ -300,6 +327,7 @@ page.completeSet();
 const completedSets = storage.get(`workout_${dateKey}`);
 assert.strictEqual(page.data.mode, "rest", "completing a set should open the rest screen");
 assert.strictEqual(completedSets[0].exerciseId, bench.id, "completed set should store a stable exercise id");
+assert.strictEqual(completedSets[0].programId, undefined, "a non-kettlebell action must not be mislabeled as specialty training");
 assert.strictEqual(completedSets[0].restSeconds, 80, "completed set should store its planned rest time");
 assert.strictEqual(page.findLastPerformance(bench.id, bench.name).weight, 72.5, "last performance should update incrementally");
 
